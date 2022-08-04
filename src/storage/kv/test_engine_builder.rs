@@ -6,11 +6,11 @@ use std::{
 };
 
 use causal_ts::tests::DummyRawTsTracker;
-use engine_rocks::RocksCfOptions;
-use engine_traits::{CfName, ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE};
+use engine_traits::CfName;
 use file_system::IoRateLimiter;
 use kvproto::kvrpcpb::ApiVersion;
 use tikv_util::config::ReadableSize;
+use crate::config::DbConfig;
 
 use crate::storage::{
     config::BlockCacheConfig,
@@ -104,28 +104,16 @@ impl TestEngineBuilder {
             Some(p) => p.to_str().unwrap().to_owned(),
         };
         let api_version = self.api_version;
-        let cfs = self.cfs.unwrap_or_else(|| ALL_CFS.to_vec());
         let mut cache_opt = BlockCacheConfig::default();
         if !enable_block_cache {
             cache_opt.capacity = Some(ReadableSize::kb(0));
         }
         let cache = cache_opt.build_shared_cache();
-        let cfs_opts = cfs
-            .iter()
-            .map(|cf| match *cf {
-                CF_DEFAULT => (
-                    CF_DEFAULT,
-                    cfg_rocksdb.defaultcf.build_opt(&cache, None, api_version),
-                ),
-                CF_LOCK => (CF_LOCK, cfg_rocksdb.lockcf.build_opt(&cache)),
-                CF_WRITE => (CF_WRITE, cfg_rocksdb.writecf.build_opt(&cache, None)),
-                CF_RAFT => (CF_RAFT, cfg_rocksdb.raftcf.build_opt(&cache)),
-                _ => (*cf, RocksCfOptions::default()),
-            })
-            .collect();
+        let cfs_opts = cfg_rocksdb.build_cf_opts(&cache, None, api_version);
         let mut engine =
-            RocksEngine::new(&path, None, cfs_opts, cache.is_some(), self.io_rate_limiter)?;
+            RocksEngine::new(&path, None, cfs_opts.clone(), cache.is_some(), self.io_rate_limiter)?;
 
+        DbConfig::set_write_compaction_filter_factory(engine.get_rocksdb(), cfs_opts);
         if let ApiVersion::V2 = api_version {
             Self::register_causal_observer(&mut engine);
         }
