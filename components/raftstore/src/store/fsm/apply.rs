@@ -27,11 +27,7 @@ use batch_system::{
 };
 use collections::{HashMap, HashMapEntry, HashSet};
 use crossbeam::channel::{TryRecvError, TrySendError};
-use engine_traits::{
-    DeleteStrategy, KvEngine, Mutable, PerfContext, PerfContextKind, RaftEngine,
-    RaftEngineReadOnly, Range as EngineRange, Snapshot, SstMetaInfo, WriteBatch, ALL_CFS,
-    CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE,
-};
+use engine_traits::{DeleteStrategy, KvEngine, Mutable, PerfContext, PerfContextKind, RaftEngine, RaftEngineReadOnly, Range as EngineRange, Snapshot, SstMetaInfo, WriteBatch, ALL_CFS, CF_DEFAULT, CF_LOCK, CF_RAFT, CF_WRITE, TabletFactory};
 use fail::fail_point;
 use kvproto::{
     import_sstpb::SstMeta,
@@ -354,7 +350,7 @@ where
     region_scheduler: Scheduler<RegionTask<EK::Snapshot>>,
     router: ApplyRouter<EK>,
     notifier: Box<dyn Notifier<EK>>,
-    engine: EK,
+    tablet_factory: Box<dyn TabletFactory<EK> + Send>,
     applied_batch: ApplyCallbackBatch<EK::Snapshot>,
     apply_res: Vec<ApplyRes<EK::Snapshot>>,
     exec_log_index: u64,
@@ -372,8 +368,6 @@ where
     use_delete_range: bool,
 
     perf_context: EK::PerfContext,
-
-    yield_duration: Duration,
 
     store_id: u64,
     /// region_id -> (peer_id, is_splitting)
@@ -421,7 +415,7 @@ where
         host: CoprocessorHost<EK>,
         importer: Arc<SstImporter>,
         region_scheduler: Scheduler<RegionTask<EK::Snapshot>>,
-        engine: EK,
+        tablet_factory: Box<dyn TabletFactory<EK> + Send>,
         router: ApplyRouter<EK>,
         notifier: Box<dyn Notifier<EK>>,
         cfg: &Config,
@@ -437,7 +431,7 @@ where
             host,
             importer,
             region_scheduler,
-            engine: engine.clone(),
+            tablet_factory,
             router,
             notifier,
             kv_wb,
@@ -451,7 +445,6 @@ where
             sync_log_hint: false,
             use_delete_range: cfg.use_delete_range,
             perf_context: engine.get_perf_context(cfg.perf_level, PerfContextKind::RaftstoreApply),
-            yield_duration: cfg.apply_yield_duration.0,
             delete_ssts: vec![],
             pending_delete_ssts: vec![],
             store_id,
@@ -483,7 +476,7 @@ where
     /// `finish_for`.
     pub fn commit(&mut self, delegate: &mut ApplyDelegate<EK>) {
         if delegate.last_flush_applied_index < delegate.apply_state.get_applied_index() {
-            delegate.write_apply_state(self.kv_wb_mut());
+            delegate.write_apply_state(self.kv_wb_mut(delegate));
         }
         self.commit_opt(delegate, true);
     }
@@ -495,13 +488,13 @@ where
             self.prepare_for(delegate);
             delegate.last_flush_applied_index = delegate.apply_state.get_applied_index()
         }
-        self.kv_wb_last_bytes = self.kv_wb().data_size() as u64;
-        self.kv_wb_last_keys = self.kv_wb().count() as u64;
+        self.kv_wb_last_bytes = self.kv_wb_mut(delegate).data_size() as u64;
+        self.kv_wb_last_keys = self.kv_wb_mut(delegate).count() as u64;
     }
 
     /// Writes all the changes into RocksDB.
     /// If it returns true, all pending writes are persisted in engines.
-    pub fn write_to_db(&mut self) -> bool {
+    pub fn write_to_db(&mut self, delegate: &ApplyDelegate<EK>) -> bool {
         let need_sync = self.sync_log_hint;
         // There may be put and delete requests after ingest request in the same fsm.
         // To guarantee the correct order, we must ingest the pending_sst first, and
@@ -509,7 +502,7 @@ where
         if !self.pending_ssts.is_empty() {
             let tag = self.tag.clone();
             self.importer
-                .ingest(&self.pending_ssts, &self.engine)
+                .ingest(&self.pending_ssts, delegate.tablet.as_ref().unwrap())
                 .unwrap_or_else(|e| {
                     panic!(
                         "{} failed to ingest ssts {:?}: {:?}",
@@ -518,11 +511,11 @@ where
                 });
             self.pending_ssts = vec![];
         }
-        if !self.kv_wb_mut().is_empty() {
+        if !self.kv_wb_mut(delegate).is_empty() {
             self.perf_context.start_observe();
             let mut write_opts = engine_traits::WriteOptions::new();
             write_opts.set_sync(need_sync);
-            self.kv_wb_mut().write_opt(&write_opts).unwrap_or_else(|e| {
+            self.kv_wb_mut(delegate).write_opt(&write_opts).unwrap_or_else(|e| {
                 panic!("failed to write to engine: {:?}", e);
             });
             let trackers: Vec<_> = self
@@ -535,14 +528,14 @@ where
                 .collect();
             self.perf_context.report_metrics(&trackers);
             self.sync_log_hint = false;
-            let data_size = self.kv_wb().data_size();
+            let data_size = self.kv_wb_mut(delegate).data_size();
             if data_size > APPLY_WB_SHRINK_SIZE {
                 // Control the memory usage for the WriteBatch.
                 self.kv_wb = self.engine.write_batch_with_cap(DEFAULT_APPLY_WB_SIZE);
             } else {
                 // Clear data, reuse the WriteBatch, this can reduce memory allocations and
                 // deallocations.
-                self.kv_wb_mut().clear();
+                self.kv_wb_mut(delegate).clear();
             }
             self.kv_wb_last_bytes = 0;
             self.kv_wb_last_keys = 0;
@@ -564,7 +557,7 @@ where
         // Call it before invoking callback for preventing Commit is executed before
         // Prewrite is observed.
         self.host
-            .on_flush_applied_cmd_batch(batch_max_level, cmd_batch, &self.engine);
+            .on_flush_applied_cmd_batch(batch_max_level, cmd_batch, delegate.tablet.as_ref().unwrap(),);
         // Invoke callbacks
         let now = std::time::Instant::now();
         for (cb, resp) in cb_batch.drain(..) {
@@ -585,7 +578,7 @@ where
         results: VecDeque<ExecResult<EK::Snapshot>>,
     ) {
         if !delegate.pending_remove {
-            delegate.write_apply_state(self.kv_wb_mut());
+            delegate.write_apply_state(self.kv_wb_mut(delegate));
         }
         self.commit_opt(delegate, false);
         self.apply_res.push(ApplyRes {
@@ -599,26 +592,28 @@ where
     }
 
     pub fn delta_bytes(&self) -> u64 {
-        self.kv_wb().data_size() as u64 - self.kv_wb_last_bytes
+        self.kv_wb.as_ref().map_or(0, |w| w.data_size()) as u64 - self.kv_wb_last_bytes
     }
 
     pub fn delta_keys(&self) -> u64 {
-        self.kv_wb().count() as u64 - self.kv_wb_last_keys
+        self.kv_wb.as_ref().map_or(0, |w| w.count()) as u64 - self.kv_wb_last_keys
     }
 
-    #[inline]
-    pub fn kv_wb(&self) -> &EK::WriteBatch {
-        &self.kv_wb
-    }
-
-    #[inline]
-    pub fn kv_wb_mut(&mut self) -> &mut EK::WriteBatch {
-        &mut self.kv_wb
+    pub fn kv_wb_mut(&mut self, delegate: &ApplyDelegate<EK>) -> &mut W {
+        if self.kv_wb.is_none() {
+            // If `enable_multi_batch_write` was set true, we create `RocksWriteBatchVec`.
+            // Otherwise create `RocksWriteBatch`.
+            self.kv_wb = Some(W::with_capacity(
+                delegate.tablet.as_ref().unwrap(),
+                DEFAULT_APPLY_WB_SIZE,
+            ));
+        }
+        self.kv_wb.as_mut().unwrap()
     }
 
     /// Flush all pending writes to engines.
     /// If it returns true, all pending writes are persisted in engines.
-    pub fn flush(&mut self) -> bool {
+    pub fn flush(&mut self, delegate: &ApplyDelegate<EK>) -> bool {
         // TODO: this check is too hacky, need to be more verbose and less buggy.
         let t = match self.timer.take() {
             Some(t) => t,
@@ -630,13 +625,7 @@ where
         // take raft log gc for example, we write kv WAL first, then write raft WAL,
         // if power failure happen, raft WAL may synced to disk, but kv WAL may not.
         // so we use sync-log flag here.
-        let is_synced = self.write_to_db();
-
-        if !self.apply_res.is_empty() {
-            fail_point!("before_nofity_apply_res");
-            let apply_res = mem::take(&mut self.apply_res);
-            self.notifier.notify(apply_res);
-        }
+        let is_synced = self.write_to_db(delegate);
 
         let elapsed = t.saturating_elapsed();
         STORE_APPLY_LOG_HISTOGRAM.observe(duration_to_sec(elapsed) as f64);
@@ -913,13 +902,15 @@ where
     trace: ApplyMemoryTrace,
 
     buckets: Option<BucketStat>,
+
+    tablet: Option<EK>,
 }
 
 impl<EK> ApplyDelegate<EK>
 where
     EK: KvEngine,
 {
-    fn from_registration(reg: Registration) -> ApplyDelegate<EK> {
+    fn from_registration(reg: Registration<EK>) -> ApplyDelegate<EK> {
         ApplyDelegate {
             id: reg.id,
             tag: format!("[region {}] {}", reg.region.get_id(), reg.id),
@@ -945,6 +936,7 @@ where
             raft_engine: reg.raft_engine,
             trace: ApplyMemoryTrace::default(),
             buckets: None,
+            tablet: reg.tablet,
         }
     }
 
@@ -1074,14 +1066,12 @@ where
             let mut has_unflushed_data =
                 self.last_flush_applied_index != self.apply_state.get_applied_index();
             if has_unflushed_data && should_write_to_engine(&cmd)
-                || apply_ctx.kv_wb().should_write_to_engine()
+                || apply_ctx
+                .kv_wb
+                .as_ref()
+                .map_or(false, |wb| wb.should_write_to_engine())
             {
                 apply_ctx.commit(self);
-                if let Some(start) = self.handle_start.as_ref() {
-                    if start.saturating_elapsed() >= apply_ctx.yield_duration {
-                        return ApplyResult::Yield;
-                    }
-                }
                 has_unflushed_data = false;
             }
             if self.priority != apply_ctx.priority {
@@ -1273,10 +1263,10 @@ where
         } else {
             ctx.exec_log_index = index;
             ctx.exec_log_term = term;
-            ctx.kv_wb_mut().set_save_point();
+            ctx.kv_wb_mut(self).set_save_point();
             let (resp, exec_result) = match self.exec_raft_cmd(ctx, req) {
                 Ok(a) => {
-                    ctx.kv_wb_mut().pop_save_point().unwrap();
+                    ctx.kv_wb_mut(self).pop_save_point().unwrap();
                     if req.has_admin_request() {
                         origin_epoch = Some(self.region.get_region_epoch().clone());
                     }
@@ -1284,7 +1274,7 @@ where
                 }
                 Err(e) => {
                     // clear dirty values.
-                    ctx.kv_wb_mut().rollback_to_save_point().unwrap();
+                    ctx.kv_wb_mut(self ).rollback_to_save_point().unwrap();
                     match e {
                         Error::EpochNotMatch(..) => debug!(
                             "epoch not match";
