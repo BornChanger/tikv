@@ -442,7 +442,7 @@ fn init_compaction_filter(cluster: &Cluster<ServerCluster>, store_id: u64) {
     gc_worker
         .start_auto_gc(
             &kv_engine,
-            AutoGcConfig::new(MockSafePointProvider, MockRegionInfoProvider, 1),
+            AutoGcConfig::new(MockSafePointProvider, MockRegionInfoProvider, 1, None),
             Arc::new(AtomicU64::new(0)),
         )
         .unwrap();

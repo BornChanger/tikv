@@ -1205,6 +1205,7 @@ where
             self.feature_gate.clone(),
             self.scheduler(),
             Arc::new(cfg.region_info_provider.clone()),
+            cfg.tablet_factory.clone(),
         );
 
         let mut handle = self.gc_manager_handle.lock().unwrap();
@@ -1937,7 +1938,7 @@ mod tests {
         r3.mut_peers().push(Peer::default());
         r3.mut_peers()[0].set_store_id(store_id);
 
-        let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1);
+        let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1, None);
         let safe_point = Arc::new(AtomicU64::new(0));
         let kv_engine = engine.get_rocksdb();
         gc_worker

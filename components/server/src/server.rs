@@ -1031,6 +1031,7 @@ where
             self.pd_client.clone(),
             self.region_info_accessor.clone(),
             node.id(),
+            self.tablet_factory.clone(),
         );
         gc_worker
             .start(node.id())

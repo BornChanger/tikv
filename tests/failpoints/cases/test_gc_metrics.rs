@@ -161,7 +161,7 @@ fn test_txn_gc_keys_handled() {
     let sp_provider = MockSafePointProvider(200);
     let mut host = CoprocessorHost::<RocksEngine>::default();
     let ri_provider = RegionInfoAccessor::new(&mut host);
-    let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1);
+    let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1, None);
     let safe_point = Arc::new(AtomicU64::new(500));
 
     let kv_engine = engine.get_rocksdb();
@@ -309,7 +309,7 @@ fn test_raw_gc_keys_handled() {
     let sp_provider = MockSafePointProvider(200);
     let mut host = CoprocessorHost::<RocksEngine>::default();
     let ri_provider = RegionInfoAccessor::new(&mut host);
-    let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, store_id);
+    let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, store_id, None);
     let safe_point = Arc::new(AtomicU64::new(500));
 
     let kv_engine = engine.get_rocksdb();

@@ -15,23 +15,20 @@ use engine_rocks::{
     },
     RocksEngine,
 };
-use engine_traits::{raw_ttl::ttl_current_ts, MiscExt, OpenOptions, TabletFactory};
+use engine_traits::{raw_ttl::ttl_current_ts, MiscExt};
 use prometheus::local::LocalHistogramVec;
 use raftstore::coprocessor::RegionInfoProvider;
 use tikv_util::worker::{ScheduleError, Scheduler};
 use txn_types::Key;
 
 use crate::{
-    server::{
-        engine_factory_v2::KvEngineFactoryV2,
-        gc_worker::{
-            compaction_filter::{
-                CompactionFilterStats, DEFAULT_DELETE_BATCH_COUNT, GC_COMPACTION_FAILURE,
-                GC_COMPACTION_FILTERED, GC_COMPACTION_FILTER_MVCC_DELETION_MET,
-                GC_COMPACTION_FILTER_ORPHAN_VERSIONS, GC_CONTEXT,
-            },
-            GcTask, STAT_RAW_KEYMODE,
+    server::gc_worker::{
+        compaction_filter::{
+            CompactionFilterStats, RocksDBCompactionFilterFactory, DEFAULT_DELETE_BATCH_COUNT,
+            GC_COMPACTION_FAILURE, GC_COMPACTION_FILTERED, GC_COMPACTION_FILTER_MVCC_DELETION_MET,
+            GC_COMPACTION_FILTER_ORPHAN_VERSIONS, GC_CONTEXT,
         },
+        GcTask, STAT_RAW_KEYMODE,
     },
     storage::mvcc::{GC_DELETE_VERSIONS_HISTOGRAM, MVCC_VERSIONS_HISTOGRAM},
 };
@@ -39,29 +36,10 @@ use crate::{
 pub struct RawCompactionFilterFactory {
     region_id: u64,
     suffix: u64,
-    tablet_factory: Option<KvEngineFactoryV2>,
 }
 impl RawCompactionFilterFactory {
-    pub fn new(region_id: u64, suffix: u64, tablet_factory: Option<KvEngineFactoryV2>) -> Self {
-        Self {
-            region_id,
-            suffix,
-            tablet_factory,
-        }
-    }
-
-    pub fn get_rocksdb(&self) -> Option<RocksEngine> {
-        return match &self.tablet_factory {
-            Some(factory) => Some(
-                factory
-                    .open_tablet(self.region_id, Some(self.suffix), OpenOptions::default())
-                    .unwrap(),
-            ),
-            None => {
-                let gc_context_option = GC_CONTEXT.lock().unwrap();
-                (*gc_context_option).as_ref().map(|ctx| ctx.db.clone())
-            }
-        };
+    pub fn new(region_id: u64, suffix: u64) -> Self {
+        Self { region_id, suffix }
     }
 }
 
@@ -70,12 +48,7 @@ impl CompactionFilterFactory for RawCompactionFilterFactory {
         &self,
         context: &CompactionFilterContext,
     ) -> *mut DBCompactionFilter {
-        let db = match self.get_rocksdb() {
-            Some(rocksdb) => rocksdb,
-            None => {
-                return std::ptr::null_mut();
-            }
-        };
+        let db = self.get_rocksdb(self.region_id, self.suffix).unwrap();
         //---------------- GC context --------------
         let gc_context_option = GC_CONTEXT.lock().unwrap();
         let gc_context = match *gc_context_option {
@@ -108,6 +81,7 @@ impl CompactionFilterFactory for RawCompactionFilterFactory {
     }
 }
 
+impl RocksDBCompactionFilterFactory for RawCompactionFilterFactory {}
 struct RawCompactionFilter {
     safe_point: u64,
     engine: RocksEngine,
