@@ -24,7 +24,7 @@ use txn_types::Key;
 use crate::{
     server::gc_worker::{
         compaction_filter::{
-            CompactionFilterStats, RocksdbCompactionFilterFactory, DEFAULT_DELETE_BATCH_COUNT,
+            get_rocksdb_from_factory, CompactionFilterStats, DEFAULT_DELETE_BATCH_COUNT,
             GC_COMPACTION_FAILURE, GC_COMPACTION_FILTERED, GC_COMPACTION_FILTER_MVCC_DELETION_MET,
             GC_COMPACTION_FILTER_ORPHAN_VERSIONS, GC_CONTEXT,
         },
@@ -48,7 +48,10 @@ impl CompactionFilterFactory for RawCompactionFilterFactory {
         &self,
         context: &CompactionFilterContext,
     ) -> *mut DBCompactionFilter {
-        let db = self.get_rocksdb(self.region_id, self.suffix).unwrap();
+        let db = match get_rocksdb_from_factory(self.region_id, self.suffix) {
+            Ok(rocksdb) => rocksdb,
+            Err(_) => return std::ptr::null_mut(),
+        };
         //---------------- GC context --------------
         let gc_context_option = GC_CONTEXT.lock().unwrap();
         let gc_context = match *gc_context_option {
@@ -81,7 +84,6 @@ impl CompactionFilterFactory for RawCompactionFilterFactory {
     }
 }
 
-impl RocksdbCompactionFilterFactory for RawCompactionFilterFactory {}
 struct RawCompactionFilter {
     safe_point: u64,
     engine: RocksEngine,
