@@ -1044,7 +1044,6 @@ where
         // table_factory of TiKvServer won't be None
         assert!(self.tablet_factory.is_some());
         if let Err(e) = gc_worker.start_auto_gc(
-            &engines.engines.kv,
             auto_gc_config,
             safe_point,
             self.tablet_factory.as_ref().unwrap().clone(),

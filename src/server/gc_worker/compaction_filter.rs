@@ -140,41 +140,8 @@ lazy_static! {
     ).unwrap();
 }
 
-pub trait CompactionFilterInitializer<EK>
-where
-    EK: KvEngine,
+pub trait CompactionFilterInitializer
 {
-    fn init_compaction_filter(
-        &self,
-        store_id: u64,
-        safe_point: Arc<AtomicU64>,
-        cfg_tracker: GcWorkerConfigManager,
-        feature_gate: FeatureGate,
-        gc_scheduler: Scheduler<GcTask<EK>>,
-        region_info_provider: Arc<dyn RegionInfoProvider>,
-        tablet_factory: Arc<dyn TabletFactory<RocksEngine> + Send + Sync>,
-    );
-}
-
-impl<EK> CompactionFilterInitializer<EK> for EK
-where
-    EK: KvEngine,
-{
-    default fn init_compaction_filter(
-        &self,
-        _store_id: u64,
-        _safe_point: Arc<AtomicU64>,
-        _cfg_tracker: GcWorkerConfigManager,
-        _feature_gate: FeatureGate,
-        _gc_scheduler: Scheduler<GcTask<EK>>,
-        _region_info_provider: Arc<dyn RegionInfoProvider>,
-        _tablet_factory: Arc<dyn TabletFactory<RocksEngine> + Send + Sync>,
-    ) {
-        info!("Compaction filter is not supported for this engine.");
-    }
-}
-
-impl CompactionFilterInitializer<RocksEngine> for RocksEngine {
     fn init_compaction_filter(
         &self,
         store_id: u64,
@@ -183,7 +150,22 @@ impl CompactionFilterInitializer<RocksEngine> for RocksEngine {
         feature_gate: FeatureGate,
         gc_scheduler: Scheduler<GcTask<RocksEngine>>,
         region_info_provider: Arc<dyn RegionInfoProvider>,
-        tablet_factory: Arc<dyn TabletFactory<RocksEngine> + Send + Sync>,
+    )
+    {
+        info!("not implemented");
+    }
+}
+
+impl CompactionFilterInitializer for Arc<dyn TabletFactory<RocksEngine> + Send + Sync>
+{
+    fn init_compaction_filter(
+        &self,
+        store_id: u64,
+        safe_point: Arc<AtomicU64>,
+        cfg_tracker: GcWorkerConfigManager,
+        feature_gate: FeatureGate,
+        gc_scheduler: Scheduler<GcTask<RocksEngine>>,
+        region_info_provider: Arc<dyn RegionInfoProvider>,
     ) {
         info!("initialize GC context for compaction filter");
         let mut gc_context = GC_CONTEXT.lock().unwrap();
@@ -196,7 +178,7 @@ impl CompactionFilterInitializer<RocksEngine> for RocksEngine {
             region_info_provider,
             #[cfg(any(test, feature = "failpoints"))]
             callbacks_on_drop: vec![],
-            tablet_factory,
+            tablet_factory: self.clone(),
         });
     }
 }

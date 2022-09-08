@@ -156,7 +156,6 @@ impl<E: Engine, F: KvFormat> SyncTestStorage<E, F> {
             .unwrap();
         self.gc_worker
             .start_auto_gc(
-                kv_engine,
                 cfg,
                 Arc::new(AtomicU64::new(0)),
                 Arc::new(TestTabletFactory::new(path.path(), ops, cf_opts)),

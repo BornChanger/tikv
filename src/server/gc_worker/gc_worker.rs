@@ -1102,7 +1102,7 @@ where
     /// once there are no more references.
     refs: Arc<AtomicUsize>,
     worker: Arc<Mutex<LazyWorker<GcTask<E::Local>>>>,
-    worker_scheduler: Scheduler<GcTask<E::Local>>,
+    worker_scheduler: Scheduler<GcTask<engine_rocks::RocksEngine>>,
 
     applied_lock_collector: Option<Arc<AppliedLockCollector>>,
 
@@ -1188,7 +1188,6 @@ where
 
     pub fn start_auto_gc<S: GcSafePointProvider, R: RegionInfoProvider + Clone + 'static>(
         &self,
-        kv_engine: &E::Local,
         cfg: AutoGcConfig<S, R>,
         safe_point: Arc<AtomicU64>, // Store safe point here.
         tablet_factory: Arc<dyn TabletFactory<RocksEngine> + Send + Sync>,
@@ -1199,14 +1198,13 @@ where
         );
 
         info!("initialize compaction filter to perform GC when necessary");
-        kv_engine.init_compaction_filter(
+        tablet_factory.init_compaction_filter(
             cfg.self_store_id,
             safe_point.clone(),
             self.config_manager.clone(),
             self.feature_gate.clone(),
             self.scheduler(),
             Arc::new(cfg.region_info_provider.clone()),
-            tablet_factory,
         );
 
         let mut handle = self.gc_manager_handle.lock().unwrap();
@@ -1261,7 +1259,7 @@ where
         Ok(())
     }
 
-    pub fn scheduler(&self) -> Scheduler<GcTask<E::Local>> {
+    pub fn scheduler(&self) -> Scheduler<GcTask<engine_rocks::RocksEngine>> {
         self.worker_scheduler.clone()
     }
 

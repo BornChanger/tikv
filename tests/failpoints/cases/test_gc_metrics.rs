@@ -179,7 +179,6 @@ fn test_txn_gc_keys_handled() {
         .unwrap();
     gc_worker
         .start_auto_gc(
-            &kv_engine,
             auto_gc_cfg,
             safe_point,
             Arc::new(TestTabletFactory::new(path.path(), ops, cf_opts)),
@@ -340,7 +339,6 @@ fn test_raw_gc_keys_handled() {
 
     gc_worker
         .start_auto_gc(
-            &kv_engine,
             auto_gc_cfg,
             safe_point,
             Arc::new(TestTabletFactory::new(path.path(), ops, cf_opts)),
