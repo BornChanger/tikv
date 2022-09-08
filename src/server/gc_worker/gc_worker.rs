@@ -15,10 +15,10 @@ use std::{
 use api_version::{ApiV2, KvFormat};
 use collections::HashMap;
 use concurrency_manager::ConcurrencyManager;
-use engine_rocks::FlowInfo;
+use engine_rocks::{FlowInfo, RocksEngine};
 use engine_traits::{
     raw_ttl::ttl_current_ts, DeleteStrategy, Error as EngineError, KvEngine, MiscExt, Range,
-    WriteBatch, WriteOptions, CF_DEFAULT, CF_LOCK, CF_WRITE,
+    TabletFactory, WriteBatch, WriteOptions, CF_DEFAULT, CF_LOCK, CF_WRITE,
 };
 use file_system::{IoType, WithIoType};
 use futures::executor::block_on;
@@ -1191,6 +1191,7 @@ where
         kv_engine: &E::Local,
         cfg: AutoGcConfig<S, R>,
         safe_point: Arc<AtomicU64>, // Store safe point here.
+        tablet_factory: Arc<dyn TabletFactory<RocksEngine> + Send + Sync>,
     ) -> Result<()> {
         assert!(
             cfg.self_store_id > 0,
@@ -1205,7 +1206,7 @@ where
             self.feature_gate.clone(),
             self.scheduler(),
             Arc::new(cfg.region_info_provider.clone()),
-            cfg.tablet_factory.clone(),
+            tablet_factory,
         );
 
         let mut handle = self.gc_manager_handle.lock().unwrap();
@@ -1498,6 +1499,11 @@ mod tests {
 
     use api_version::{ApiV2, KvFormat, RawValue};
     use engine_rocks::{util::get_cf_handle, RocksEngine};
+    use engine_test::{
+        ctor::{CfOptions, DbOptions},
+        kv::TestTabletFactory,
+    };
+    use engine_traits::ALL_CFS;
     use futures::executor::block_on;
     use kvproto::{
         kvrpcpb::{ApiVersion, Op},
@@ -1512,6 +1518,7 @@ mod tests {
         router::RaftStoreBlackHole,
         store::util::new_peer,
     };
+    use tempfile::Builder;
     use tikv_kv::Snapshot;
     use tikv_util::{codec::number::NumberEncoder, future::paired_future_callback};
     use txn_types::Mutation;
@@ -1938,11 +1945,24 @@ mod tests {
         r3.mut_peers().push(Peer::default());
         r3.mut_peers()[0].set_store_id(store_id);
 
-        let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1, None);
+        let auto_gc_cfg = AutoGcConfig::new(sp_provider, ri_provider, 1);
         let safe_point = Arc::new(AtomicU64::new(0));
         let kv_engine = engine.get_rocksdb();
+        // Building a tablet factory
+        let ops = DbOptions::default();
+        let cf_opts = ALL_CFS.iter().map(|cf| (*cf, CfOptions::new())).collect();
+        let path = Builder::new()
+            .prefix("test_gc_keys_with_region_info_provider")
+            .tempdir()
+            .unwrap();
+
         gc_worker
-            .start_auto_gc(&kv_engine, auto_gc_cfg, safe_point)
+            .start_auto_gc(
+                &kv_engine,
+                auto_gc_cfg,
+                safe_point,
+                Arc::new(TestTabletFactory::new(path.path(), ops, cf_opts)),
+            )
             .unwrap();
         host.on_region_changed(&r1, RegionChangeEvent::Create, StateRole::Leader);
         host.on_region_changed(&r2, RegionChangeEvent::Create, StateRole::Leader);
