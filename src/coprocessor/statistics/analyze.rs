@@ -3,7 +3,10 @@
 use std::{cmp::Reverse, collections::BinaryHeap, mem, sync::Arc};
 
 use async_trait::async_trait;
-use kvproto::coprocessor::{KeyRange, Response};
+use kvproto::{
+    coprocessor::{KeyRange, Response},
+    kvrpcpb::CommandPri,
+};
 use protobuf::Message;
 use rand::{rngs::StdRng, Rng};
 use tidb_query_common::storage::{
@@ -370,7 +373,11 @@ impl<S: Snapshot> RowSampleBuilder<S> {
         let mut is_drained = false;
         let mut collector = self.new_collector();
         while !is_drained {
-            let mut sample = self.quota_limiter.new_sample(!self.is_auto_analyze);
+            let mut sample = if self.is_auto_analyze {
+                self.quota_limiter.new_sample(CommandPri::Low)
+            } else {
+                self.quota_limiter.new_sample(CommandPri::Normal)
+            };
             let mut read_size: usize = 0;
             {
                 let result = {
@@ -434,13 +441,7 @@ impl<S: Snapshot> RowSampleBuilder<S> {
             sample.add_read_bytes(read_size);
             // Don't let analyze bandwidth limit the quota limiter, this is already limited
             // in rate limiter.
-            let quota_delay = {
-                if !self.is_auto_analyze {
-                    self.quota_limiter.consume_sample(sample, true).await
-                } else {
-                    self.quota_limiter.consume_sample(sample, false).await
-                }
-            };
+            let quota_delay = self.quota_limiter.consume_sample(sample).await;
 
             if !quota_delay.is_zero() {
                 NON_TXN_COMMAND_THROTTLE_TIME_COUNTER_VEC_STATIC

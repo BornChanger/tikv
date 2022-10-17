@@ -2819,26 +2819,32 @@ impl ConfigManager for LogConfigManager {
 #[serde(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct QuotaConfig {
-    pub foreground_cpu_time: usize,
-    pub foreground_write_bandwidth: ReadableSize,
-    pub foreground_read_bandwidth: ReadableSize,
+    pub high_priority_cpu_time: usize,
+    pub high_priority_write_bandwidth: ReadableSize,
+    pub high_priority_read_bandwidth: ReadableSize,
+    pub normal_priority_cpu_time: usize,
+    pub normal_priority_write_bandwidth: ReadableSize,
+    pub normal_priority_read_bandwidth: ReadableSize,
+    pub low_priority_cpu_time: usize,
+    pub low_priority_write_bandwidth: ReadableSize,
+    pub low_priority_read_bandwidth: ReadableSize,
     pub max_delay_duration: ReadableDuration,
-    pub background_cpu_time: usize,
-    pub background_write_bandwidth: ReadableSize,
-    pub background_read_bandwidth: ReadableSize,
     pub enable_auto_tune: bool,
 }
 
 impl Default for QuotaConfig {
     fn default() -> Self {
         Self {
-            foreground_cpu_time: 0,
-            foreground_write_bandwidth: ReadableSize(0),
-            foreground_read_bandwidth: ReadableSize(0),
+            high_priority_cpu_time: 0,
+            high_priority_write_bandwidth: ReadableSize(0),
+            high_priority_read_bandwidth: ReadableSize(0),
+            normal_priority_cpu_time: 0,
+            normal_priority_write_bandwidth: ReadableSize(0),
+            normal_priority_read_bandwidth: ReadableSize(0),
+            low_priority_cpu_time: 0,
+            low_priority_write_bandwidth: ReadableSize(0),
+            low_priority_read_bandwidth: ReadableSize(0),
             max_delay_duration: ReadableDuration::millis(500),
-            background_cpu_time: 0,
-            background_write_bandwidth: ReadableSize(0),
-            background_read_bandwidth: ReadableSize(0),
             enable_auto_tune: false,
         }
     }

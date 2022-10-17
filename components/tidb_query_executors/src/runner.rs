@@ -3,7 +3,7 @@
 use std::{convert::TryFrom, sync::Arc};
 
 use fail::fail_point;
-use kvproto::coprocessor::KeyRange;
+use kvproto::{coprocessor::KeyRange, kvrpcpb::CommandPri};
 use protobuf::Message;
 use tidb_query_common::{
     execute_stats::ExecSummary,
@@ -77,6 +77,8 @@ pub struct BatchExecutorsRunner<SS> {
     paging_size: Option<u64>,
 
     quota_limiter: Arc<QuotaLimiter>,
+
+    priority: CommandPri,
 }
 
 // We assign a dummy type `()` so that we can omit the type when calling
@@ -373,6 +375,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
         is_streaming: bool,
         paging_size: Option<u64>,
         quota_limiter: Arc<QuotaLimiter>,
+        priority: CommandPri,
     ) -> Result<Self> {
         let executors_len = req.get_executors().len();
         let collect_exec_summary = req.get_collect_execution_summaries();
@@ -410,6 +413,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
         }
 
         let exec_stats = ExecuteStats::new(executors_len);
+        //let priority = req.
 
         Ok(Self {
             deadline,
@@ -422,6 +426,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
             encode_type,
             paging_size,
             quota_limiter,
+            priority,
         })
     }
 
@@ -446,7 +451,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
 
         loop {
             let mut chunk = Chunk::default();
-            let mut sample = self.quota_limiter.new_sample(true);
+            let mut sample = self.quota_limiter.new_sample(self.priority);
             let (drained, record_len) = {
                 let (cpu_time, res) = sample
                     .observe_cpu_async(self.internal_handle_request(
@@ -464,7 +469,7 @@ impl<SS: 'static> BatchExecutorsRunner<SS> {
                 sample.add_read_bytes(chunk.get_rows_data().len());
             }
 
-            let quota_delay = self.quota_limiter.consume_sample(sample, true).await;
+            let quota_delay = self.quota_limiter.consume_sample(sample).await;
             if !quota_delay.is_zero() {
                 NON_TXN_COMMAND_THROTTLE_TIME_COUNTER_VEC_STATIC
                     .get(ThrottleType::dag)

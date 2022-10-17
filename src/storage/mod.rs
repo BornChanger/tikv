@@ -595,7 +595,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
         let api_version = self.api_version;
 
         let quota_limiter = self.quota_limiter.clone();
-        let mut sample = quota_limiter.new_sample(true);
+        let mut sample = quota_limiter.new_sample(priority);
 
         let res = self.read_pool.spawn_handle(
             async move {
@@ -681,7 +681,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                             .as_ref()
                             .map_or(0, |v| v.len());
                     sample.add_read_bytes(read_bytes);
-                    let quota_delay = quota_limiter.consume_sample(sample, true).await;
+                    let quota_delay = quota_limiter.consume_sample(sample).await;
                     if !quota_delay.is_zero() {
                         TXN_COMMAND_THROTTLE_TIME_COUNTER_VEC_STATIC
                             .get(CMD)
@@ -932,7 +932,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
         let concurrency_manager = self.concurrency_manager.clone();
         let api_version = self.api_version;
         let quota_limiter = self.quota_limiter.clone();
-        let mut sample = quota_limiter.new_sample(true);
+        let mut sample = quota_limiter.new_sample(priority);
         let res = self.read_pool.spawn_handle(
             async move {
                 let stage_scheduled_ts = Instant::now();
@@ -1036,7 +1036,7 @@ impl<E: Engine, L: LockManager, F: KvFormat> Storage<E, L, F> {
                         + stats.cf_statistics(CF_LOCK).flow_stats.read_bytes
                         + stats.cf_statistics(CF_WRITE).flow_stats.read_bytes;
                     sample.add_read_bytes(read_bytes);
-                    let quota_delay = quota_limiter.consume_sample(sample, true).await;
+                    let quota_delay = quota_limiter.consume_sample(sample).await;
                     if !quota_delay.is_zero() {
                         TXN_COMMAND_THROTTLE_TIME_COUNTER_VEC_STATIC
                             .get(CMD)

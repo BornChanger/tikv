@@ -334,12 +334,15 @@ where
 
         // use different quota for front-end and back-end requests
         let quota_limiter = Arc::new(QuotaLimiter::new(
-            config.quota.foreground_cpu_time,
-            config.quota.foreground_write_bandwidth,
-            config.quota.foreground_read_bandwidth,
-            config.quota.background_cpu_time,
-            config.quota.background_write_bandwidth,
-            config.quota.background_read_bandwidth,
+            config.quota.high_priority_cpu_time,
+            config.quota.high_priority_write_bandwidth,
+            config.quota.high_priority_read_bandwidth,
+            config.quota.normal_priority_cpu_time,
+            config.quota.normal_priority_write_bandwidth,
+            config.quota.normal_priority_read_bandwidth,
+            config.quota.low_priority_cpu_time,
+            config.quota.low_priority_write_bandwidth,
+            config.quota.low_priority_read_bandwidth,
             config.quota.max_delay_duration,
             config.quota.enable_auto_tune,
         ));
@@ -1361,81 +1364,82 @@ where
     // quota tuning is on the way
     fn init_quota_tuning_task(&self, quota_limiter: Arc<QuotaLimiter>) {
         // No need to do auto tune when capacity is really low
-        if SysQuota::cpu_cores_quota() * BACKGROUND_REQUEST_CORE_MAX_RATIO
-            < BACKGROUND_REQUEST_CORE_LOWER_BOUND
-        {
-            return;
-        };
-
+        // if SysQuota::cpu_cores_quota() * BACKGROUND_REQUEST_CORE_MAX_RATIO
+        // < BACKGROUND_REQUEST_CORE_LOWER_BOUND
+        // {
+        // return;
+        // };
+        //
         // Determine the base cpu quota
-        let base_cpu_quota =
-            // if cpu quota is not specified, start from optimistic case
-            if quota_limiter.cputime_limiter(false).is_infinite() {
-                1000_f64
-                    * f64::max(
-                        BACKGROUND_REQUEST_CORE_LOWER_BOUND,
-                        SysQuota::cpu_cores_quota() * BACKGROUND_REQUEST_CORE_DEFAULT_RATIO,
-                    )
-            } else {
-                quota_limiter.cputime_limiter(false) / 1000_f64
-            };
-
+        // let base_cpu_quota =
+        // if cpu quota is not specified, start from optimistic case
+        // if quota_limiter.cputime_limiter(false).is_infinite() {
+        // 1000_f64
+        // f64::max(
+        // BACKGROUND_REQUEST_CORE_LOWER_BOUND,
+        // SysQuota::cpu_cores_quota() * BACKGROUND_REQUEST_CORE_DEFAULT_RATIO,
+        // )
+        // } else {
+        // quota_limiter.cputime_limiter(false) / 1000_f64
+        // };
+        //
         // Calculate the celling and floor quota
-        let celling_quota = f64::min(
-            base_cpu_quota * 2.0,
-            1_000_f64 * SysQuota::cpu_cores_quota() * BACKGROUND_REQUEST_CORE_MAX_RATIO,
-        );
-        let floor_quota = f64::max(
-            base_cpu_quota * 0.5,
-            1_000_f64 * BACKGROUND_REQUEST_CORE_LOWER_BOUND,
-        );
-
-        let mut proc_stats: ProcessStat = ProcessStat::cur_proc_stat().unwrap();
-        self.background_worker.spawn_interval_task(
-            DEFAULT_QUOTA_LIMITER_TUNE_INTERVAL,
-            move || {
-                if quota_limiter.auto_tune_enabled() {
-                    let cputime_limit = quota_limiter.cputime_limiter(false);
-                    let old_quota = if cputime_limit.is_infinite() {
-                        base_cpu_quota
-                    } else {
-                        cputime_limit / 1000_f64
-                    };
-                    let cpu_usage = match proc_stats.cpu_usage() {
-                        Ok(r) => r,
-                        Err(_e) => 0.0,
-                    };
-                    // Try tuning quota when cpu_usage is correctly collected.
-                    // rule based tuning:
-                    // - if instance is busy, shrink cpu quota for analyze by one quota pace until
-                    //   lower bound is hit;
-                    // - if instance cpu usage is healthy, no op;
-                    // - if instance is idle, increase cpu quota by one quota pace  until upper
-                    //   bound is hit.
-                    if cpu_usage > 0.0f64 {
-                        let mut target_quota = old_quota;
-
-                        let cpu_util = cpu_usage / SysQuota::cpu_cores_quota();
-                        if cpu_util >= SYSTEM_BUSY_THRESHOLD {
-                            target_quota =
-                                f64::max(target_quota - CPU_QUOTA_ADJUSTMENT_PACE, floor_quota);
-                        } else if cpu_util < SYSTEM_HEALTHY_THRESHOLD {
-                            target_quota =
-                                f64::min(target_quota + CPU_QUOTA_ADJUSTMENT_PACE, celling_quota);
-                        }
-
-                        if old_quota != target_quota {
-                            quota_limiter.set_cpu_time_limit(target_quota as usize, false);
-                            debug!(
-                                "cpu_time_limiter tuned for backend request";
-                                "cpu_util" => ?cpu_util,
-                                "new quota" => ?target_quota);
-                            INSTANCE_BACKEND_CPU_QUOTA.set(target_quota as i64);
-                        }
-                    }
-                }
-            },
-        );
+        // let celling_quota = f64::min(
+        // base_cpu_quota * 2.0,
+        // 1_000_f64 * SysQuota::cpu_cores_quota() *
+        // BACKGROUND_REQUEST_CORE_MAX_RATIO, );
+        // let floor_quota = f64::max(
+        // base_cpu_quota * 0.5,
+        // 1_000_f64 * BACKGROUND_REQUEST_CORE_LOWER_BOUND,
+        // );
+        //
+        // let mut proc_stats: ProcessStat =
+        // ProcessStat::cur_proc_stat().unwrap();
+        // self.background_worker.spawn_interval_task(
+        // DEFAULT_QUOTA_LIMITER_TUNE_INTERVAL,
+        // move || {
+        // if quota_limiter.auto_tune_enabled() {
+        // let cputime_limit = quota_limiter.cputime_limiter(false);
+        // let old_quota = if cputime_limit.is_infinite() {
+        // base_cpu_quota
+        // } else {
+        // cputime_limit / 1000_f64
+        // };
+        // let cpu_usage = match proc_stats.cpu_usage() {
+        // Ok(r) => r,
+        // Err(_e) => 0.0,
+        // };
+        // Try tuning quota when cpu_usage is correctly collected.
+        // rule based tuning:
+        // - if instance is busy, shrink cpu quota for analyze by one quota pace
+        //   until lower bound is hit;
+        // - if instance cpu usage is healthy, no op;
+        // - if instance is idle, increase cpu quota by one quota pace  until
+        //   upper bound is hit.
+        // if cpu_usage > 0.0f64 {
+        // let mut target_quota = old_quota;
+        //
+        // let cpu_util = cpu_usage / SysQuota::cpu_cores_quota();
+        // if cpu_util >= SYSTEM_BUSY_THRESHOLD {
+        // target_quota =
+        // f64::max(target_quota - CPU_QUOTA_ADJUSTMENT_PACE, floor_quota);
+        // } else if cpu_util < SYSTEM_HEALTHY_THRESHOLD {
+        // target_quota =
+        // f64::min(target_quota + CPU_QUOTA_ADJUSTMENT_PACE, celling_quota);
+        // }
+        //
+        // if old_quota != target_quota {
+        // quota_limiter.set_cpu_time_limit(target_quota as usize, false);
+        // debug!(
+        // "cpu_time_limiter tuned for backend request";
+        // "cpu_util" => ?cpu_util,
+        // "new quota" => ?target_quota);
+        // INSTANCE_BACKEND_CPU_QUOTA.set(target_quota as i64);
+        // }
+        // }
+        // }
+        // },
+        // );
     }
 
     fn init_storage_stats_task(&self, engines: Engines<RocksEngine, ER>) {

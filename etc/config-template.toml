@@ -47,18 +47,25 @@
 ## gain predictable stable performance.
 ## CPU quota for these front requests can use, default value is 0, it means unlimited.
 ## The unit is millicpu but for now this config is approximate and soft limit.
-# foreground-cpu-time = 0
+# high-priority-cpu-time = 0
 ## Write bandwidth limitation for this TiKV instance, default value is 0 which means unlimited.
-# foreground-write-bandwidth = "0B"
+# high-priority-write-bandwidth = "0B"
 ## Read bandwidth limitation for this TiKV instance, default value is 0 which means unlimited.
-# foreground-read-bandwidth = "0B"
+# high-priority-read-bandwidth = "0B"
 ## CPU quota for these background requests can use, default value is 0, it means unlimited.
 ## The unit is millicpu but for now this config is approximate and soft limit.
-# background-cpu-time = 0
+# normal-priority-cpu-time = 0
 ## Write bandwidth limitation for backgroud request for this TiKV instance, default value is 0 which means unlimited.
-# background-write-bandwidth = "0B"
+# normal-priority-write-bandwidth = "0B"
 ## Read bandwidth limitation for background request for this TiKV instance, default value is 0 which means unlimited.
-# background-read-bandwidth = "0B"
+# normal-priority-read-bandwidth = "0B"
+## CPU quota for these background requests can use, default value is 0, it means unlimited.
+## The unit is millicpu but for now this config is approximate and soft limit.
+# low-priority-cpu-time = 0
+## Write bandwidth limitation for backgroud request for this TiKV instance, default value is 0 which means unlimited.
+# low-priority-write-bandwidth = "0B"
+## Read bandwidth limitation for background request for this TiKV instance, default value is 0 which means unlimited.
+# low-priority-read-bandwidth = "0B"
 ## Limitation of max delay duration, default value is 0 which means unlimited.
 # max-delay-duration = "500ms"
 ## Whether to enable quota auto tune

@@ -10,6 +10,7 @@ use concurrency_manager::ConcurrencyManager;
 use engine_traits::PerfLevel;
 use futures::{channel::mpsc, prelude::*};
 use kvproto::{coprocessor as coppb, errorpb, kvrpcpb};
+use kvproto::kvrpcpb::CommandPri;
 use protobuf::{CodedInputStream, Message};
 use resource_metering::{FutureExt, ResourceTagFactory, StreamExt};
 use tidb_query_common::execute_stats::ExecSummary;
@@ -240,6 +241,7 @@ impl<E: Engine> Endpoint<E> {
                         req.get_is_cache_enabled(),
                         paging_size,
                         quota_limiter,
+                        req_ctx.context.priority,
                     )
                     .data_version(data_version)
                     .build()
@@ -454,7 +456,8 @@ impl<E: Engine> Endpoint<E> {
         req_ctx: ReqContext,
         handler_builder: RequestHandlerBuilder<E::Snap>,
     ) -> impl Future<Output = Result<MemoryTraceGuard<coppb::Response>>> {
-        let priority = req_ctx.context.get_priority();
+        //let priority = req_ctx.context.get_priority();
+        let priority = CommandPri::High;
         let task_id = req_ctx.build_task_id();
         let key_ranges = req_ctx
             .ranges
@@ -603,7 +606,8 @@ impl<E: Engine> Endpoint<E> {
         handler_builder: RequestHandlerBuilder<E::Snap>,
     ) -> Result<impl futures::stream::Stream<Item = Result<coppb::Response>>> {
         let (tx, rx) = mpsc::channel::<Result<coppb::Response>>(self.stream_channel_size);
-        let priority = req_ctx.context.get_priority();
+        //let priority = req_ctx.context.get_priority();
+        let priority = CommandPri::High;
         let key_ranges = req_ctx
             .ranges
             .iter()

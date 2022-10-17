@@ -13,6 +13,7 @@ use std::{
 
 use cpu_time::ThreadTime;
 use futures::compat::Future01CompatExt;
+use kvproto::kvrpcpb::CommandPri;
 use online_config::{ConfigChange, ConfigManager};
 use pin_project::pin_project;
 
@@ -73,8 +74,9 @@ impl Default for LimiterItems {
 // completion time of tasks through restrictions of different metrics.
 #[derive(Debug)]
 pub struct QuotaLimiter {
-    foreground_limiters: LimiterItems,
-    background_limiters: LimiterItems,
+    high_priority_limiters: LimiterItems,
+    normal_priority_limiters: LimiterItems,
+    low_priority_limiters: LimiterItems,
     // max delay nano seconds
     max_delay_duration: AtomicU64,
     // if auto tune is enabled
@@ -87,6 +89,7 @@ pub struct Sample {
     write_bytes: usize,
     cpu_time: Duration,
     enable_cpu_limit: bool,
+    priority: CommandPri,
 }
 
 impl<'a> Sample {
@@ -177,11 +180,13 @@ impl<F: Future> Future for CpuObserveFuture<F> {
 
 impl Default for QuotaLimiter {
     fn default() -> Self {
-        let foreground_limiters = LimiterItems::default();
-        let background_limiters = LimiterItems::default();
+        let high_priority_limiters = LimiterItems::default();
+        let normal_priority_limiters = LimiterItems::default();
+        let low_priority_limiters = LimiterItems::default();
         Self {
-            foreground_limiters,
-            background_limiters,
+            high_priority_limiters,
+            normal_priority_limiters,
+            low_priority_limiters,
             max_delay_duration: AtomicU64::new(0),
             enable_auto_tune: AtomicBool::new(false),
         }
@@ -191,31 +196,41 @@ impl Default for QuotaLimiter {
 impl QuotaLimiter {
     // 1000 millicpu equals to 1vCPU, 0 means unlimited
     pub fn new(
-        foreground_cpu_quota: usize,
-        foreground_write_bandwidth: ReadableSize,
-        foreground_read_bandwidth: ReadableSize,
-        background_cpu_quota: usize,
-        background_write_bandwidth: ReadableSize,
-        background_read_bandwidth: ReadableSize,
+        high_priority_cpu_quota: usize,
+        high_priority_write_bandwidth: ReadableSize,
+        high_priority_read_bandwidth: ReadableSize,
+        normal_priority_cpu_quota: usize,
+        normal_priority_write_bandwidth: ReadableSize,
+        normal_priority_read_bandwidth: ReadableSize,
+        low_priority_cpu_quota: usize,
+        low_priority_write_bandwidth: ReadableSize,
+        low_priority_read_bandwidth: ReadableSize,
         max_delay_duration: ReadableDuration,
         enable_auto_tune: bool,
     ) -> Self {
-        let foreground_limiters = LimiterItems::new(
-            foreground_cpu_quota,
-            foreground_write_bandwidth,
-            foreground_read_bandwidth,
+        let high_priority_limiters = LimiterItems::new(
+            high_priority_cpu_quota,
+            high_priority_write_bandwidth,
+            high_priority_read_bandwidth,
         );
-        let background_limiters = LimiterItems::new(
-            background_cpu_quota,
-            background_write_bandwidth,
-            background_read_bandwidth,
+        let normal_priority_limiters = LimiterItems::new(
+            normal_priority_cpu_quota,
+            normal_priority_write_bandwidth,
+            normal_priority_read_bandwidth,
         );
+        let low_priority_limiters = LimiterItems::new(
+            low_priority_cpu_quota,
+            low_priority_write_bandwidth,
+            low_priority_read_bandwidth,
+        );
+
         let max_delay_duration = AtomicU64::new(max_delay_duration.0.as_nanos() as u64);
         let enable_auto_tune = AtomicBool::new(enable_auto_tune);
 
         Self {
-            foreground_limiters,
-            background_limiters,
+            high_priority_limiters,
+            normal_priority_limiters,
+            low_priority_limiters,
             max_delay_duration,
             enable_auto_tune,
         }
@@ -230,28 +245,30 @@ impl QuotaLimiter {
     }
 
     #[inline]
-    fn get_limiters(&self, is_foreground: bool) -> &LimiterItems {
-        if is_foreground {
-            &self.foreground_limiters
+    fn get_limiters(&self, priority: CommandPri) -> &LimiterItems {
+        if priority == CommandPri::High {
+            &self.high_priority_limiters
+        } else if priority == CommandPri::Low {
+            &self.low_priority_limiters
         } else {
-            &self.background_limiters
+            &self.normal_priority_limiters
         }
     }
 
-    pub fn set_cpu_time_limit(&self, quota_limit: usize, is_foreground: bool) {
-        self.get_limiters(is_foreground)
+    pub fn set_cpu_time_limit(&self, quota_limit: usize, priority: CommandPri) {
+        self.get_limiters(priority)
             .cputime_limiter
             .set_speed_limit(Self::speed_limit(quota_limit as f64 * 1000_f64));
     }
 
-    pub fn set_write_bandwidth_limit(&self, write_bandwidth: ReadableSize, is_foreground: bool) {
-        self.get_limiters(is_foreground)
+    pub fn set_write_bandwidth_limit(&self, write_bandwidth: ReadableSize, priority: CommandPri) {
+        self.get_limiters(priority)
             .write_bandwidth_limiter
             .set_speed_limit(Self::speed_limit(write_bandwidth.0 as f64));
     }
 
-    pub fn set_read_bandwidth_limit(&self, read_bandwidth: ReadableSize, is_foreground: bool) {
-        self.get_limiters(is_foreground)
+    pub fn set_read_bandwidth_limit(&self, read_bandwidth: ReadableSize, priority: CommandPri) {
+        self.get_limiters(priority)
             .read_bandwidth_limiter
             .set_speed_limit(Self::speed_limit(read_bandwidth.0 as f64));
     }
@@ -266,10 +283,8 @@ impl QuotaLimiter {
             .store(enable_auto_tune, Ordering::Relaxed);
     }
 
-    pub fn cputime_limiter(&self, is_foreground: bool) -> f64 {
-        self.get_limiters(is_foreground)
-            .cputime_limiter
-            .speed_limit()
+    pub fn cputime_limiter(&self, priority: CommandPri) -> f64 {
+        self.get_limiters(priority).cputime_limiter.speed_limit()
     }
 
     fn max_delay_duration(&self) -> Duration {
@@ -280,38 +295,45 @@ impl QuotaLimiter {
         self.enable_auto_tune.load(Ordering::Relaxed)
     }
 
-    pub fn total_read_bytes_consumed(&self, is_foreground: bool) -> usize {
-        self.get_limiters(is_foreground)
+    pub fn total_read_bytes_consumed(&self, priority: CommandPri) -> usize {
+        self.get_limiters(priority)
             .read_bandwidth_limiter
             .total_bytes_consumed()
     }
 
     // To generate a sampler.
-    pub fn new_sample(&self, is_foreground: bool) -> Sample {
+    pub fn new_sample(&self, priority: CommandPri) -> Sample {
         Sample {
             read_bytes: 0,
             write_bytes: 0,
             cpu_time: Duration::ZERO,
-            enable_cpu_limit: if is_foreground {
+            enable_cpu_limit: if priority == CommandPri::High {
                 !self
-                    .foreground_limiters
+                    .high_priority_limiters
+                    .cputime_limiter
+                    .speed_limit()
+                    .is_infinite()
+            } else if priority == CommandPri::Low {
+                !self
+                    .low_priority_limiters
                     .cputime_limiter
                     .speed_limit()
                     .is_infinite()
             } else {
                 !self
-                    .background_limiters
+                    .normal_priority_limiters
                     .cputime_limiter
                     .speed_limit()
                     .is_infinite()
             },
+            priority,
         }
     }
 
     // To consume a sampler and return delayed duration.
     // If the sampler is null, the speed limiter will just return ZERO.
-    pub async fn consume_sample(&self, sample: Sample, is_foreground: bool) -> Duration {
-        let limiters = self.get_limiters(is_foreground);
+    pub async fn consume_sample(&self, sample: Sample) -> Duration {
+        let limiters = self.get_limiters(sample.priority);
 
         let cpu_dur = if sample.cpu_time > Duration::ZERO {
             limiters
@@ -370,34 +392,64 @@ impl ConfigManager for QuotaLimitConfigManager {
         &mut self,
         change: ConfigChange,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        if let Some(cpu_limit) = change.get("foreground_cpu_time") {
+        if let Some(cpu_limit) = change.get("high_priority_cpu_quota") {
             self.quota_limiter
-                .set_cpu_time_limit(cpu_limit.into(), true);
+                .set_cpu_time_limit(cpu_limit.into(), CommandPri::High);
         }
 
-        if let Some(write_bandwidth) = change.get("foreground_write_bandwidth") {
+        if let Some(write_bandwidth) = change.get("high_priority_write_bandwidth") {
             self.quota_limiter
-                .set_write_bandwidth_limit(write_bandwidth.clone().into(), true);
+                .set_write_bandwidth_limit(write_bandwidth.clone().into(), CommandPri::High);
         }
 
-        if let Some(read_bandwidth) = change.get("foreground_read_bandwidth") {
+        if let Some(read_bandwidth) = change.get("high_priority_read_bandwidth") {
             self.quota_limiter
-                .set_read_bandwidth_limit(read_bandwidth.clone().into(), true);
+                .set_read_bandwidth_limit(read_bandwidth.clone().into(), CommandPri::High);
         }
 
-        if let Some(cpu_limit) = change.get("background_cpu_time") {
+        if let Some(cpu_limit) = change.get("high_priority_cpu_quota") {
             self.quota_limiter
-                .set_cpu_time_limit(cpu_limit.into(), false);
+                .set_cpu_time_limit(cpu_limit.into(), CommandPri::High);
         }
 
-        if let Some(write_bandwidth) = change.get("background_write_bandwidth") {
+        if let Some(write_bandwidth) = change.get("high_priority_write_bandwidth") {
             self.quota_limiter
-                .set_write_bandwidth_limit(write_bandwidth.clone().into(), false);
+                .set_write_bandwidth_limit(write_bandwidth.clone().into(), CommandPri::High);
         }
 
-        if let Some(read_bandwidth) = change.get("background_read_bandwidth") {
+        if let Some(read_bandwidth) = change.get("high_priority_read_bandwidth") {
             self.quota_limiter
-                .set_read_bandwidth_limit(read_bandwidth.clone().into(), false);
+                .set_read_bandwidth_limit(read_bandwidth.clone().into(), CommandPri::High);
+        }
+
+        if let Some(cpu_limit) = change.get("normal_priority_cpu_quota") {
+            self.quota_limiter
+                .set_cpu_time_limit(cpu_limit.into(), CommandPri::Normal);
+        }
+
+        if let Some(write_bandwidth) = change.get("normal_priority_write_bandwidth") {
+            self.quota_limiter
+                .set_write_bandwidth_limit(write_bandwidth.clone().into(), CommandPri::Normal);
+        }
+
+        if let Some(read_bandwidth) = change.get("normal_priority_read_bandwidth") {
+            self.quota_limiter
+                .set_read_bandwidth_limit(read_bandwidth.clone().into(), CommandPri::Normal);
+        }
+
+        if let Some(cpu_limit) = change.get("low_priority_cpu_quota") {
+            self.quota_limiter
+                .set_cpu_time_limit(cpu_limit.into(), CommandPri::Low);
+        }
+
+        if let Some(write_bandwidth) = change.get("low_priority_write_bandwidth") {
+            self.quota_limiter
+                .set_write_bandwidth_limit(write_bandwidth.clone().into(), CommandPri::Low);
+        }
+
+        if let Some(read_bandwidth) = change.get("low_priority_read_bandwidth") {
+            self.quota_limiter
+                .set_read_bandwidth_limit(read_bandwidth.clone().into(), CommandPri::Low);
         }
 
         if let Some(duration) = change.get("max_delay_duration") {

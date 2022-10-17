@@ -838,7 +838,7 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
         let tracker = task.tracker;
         let scheduler = self.clone();
         let quota_limiter = self.inner.quota_limiter.clone();
-        let mut sample = quota_limiter.new_sample(true);
+        let mut sample = quota_limiter.new_sample(priority);
         let pessimistic_lock_mode = self.pessimistic_lock_mode();
         let pipelined =
             task.cmd.can_be_pipelined() && pessimistic_lock_mode == PessimisticLockMode::Pipelined;
@@ -877,7 +877,7 @@ impl<E: Engine, L: LockManager> Scheduler<E, L> {
             + statistics.cf_statistics(CF_LOCK).flow_stats.read_bytes
             + statistics.cf_statistics(CF_WRITE).flow_stats.read_bytes;
         sample.add_read_bytes(read_bytes);
-        let quota_delay = quota_limiter.consume_sample(sample, true).await;
+        let quota_delay = quota_limiter.consume_sample(sample).await;
         if !quota_delay.is_zero() {
             TXN_COMMAND_THROTTLE_TIME_COUNTER_VEC_STATIC
                 .get(tag)

@@ -397,12 +397,15 @@ impl ServerCluster {
 
         let mut lock_mgr = LockManager::new(&cfg.pessimistic_txn);
         let quota_limiter = Arc::new(QuotaLimiter::new(
-            cfg.quota.foreground_cpu_time,
-            cfg.quota.foreground_write_bandwidth,
-            cfg.quota.foreground_read_bandwidth,
-            cfg.quota.background_cpu_time,
-            cfg.quota.background_write_bandwidth,
-            cfg.quota.background_read_bandwidth,
+            cfg.quota.high_priority_cpu_time,
+            cfg.quota.high_priority_write_bandwidth,
+            cfg.quota.high_priority_read_bandwidth,
+            cfg.quota.normal_priority_cpu_time,
+            cfg.quota.normal_priority_write_bandwidth,
+            cfg.quota.normal_priority_read_bandwidth,
+            cfg.quota.low_priority_cpu_time,
+            cfg.quota.low_priority_write_bandwidth,
+            cfg.quota.low_priority_read_bandwidth,
             cfg.quota.max_delay_duration,
             cfg.quota.enable_auto_tune,
         ));
