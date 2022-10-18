@@ -374,17 +374,14 @@ impl ServerCluster {
                 block_on(causal_ts::BatchTsoProvider::new_opt(
                     self.pd_client.clone(),
                     cfg.causal_ts.renew_interval.0,
-                    cfg.causal_ts.available_interval.0,
+                    cfg.causal_ts.alloc_ahead_buffer.0,
                     cfg.causal_ts.renew_batch_min_size,
                     cfg.causal_ts.renew_batch_max_size,
                 ))
                 .unwrap()
                 .into(),
             );
-            self.causal_ts_providers
-                .insert(node_id, causal_ts_provider.clone());
-            let causal_ob = causal_ts::CausalObserver::new(causal_ts_provider);
-            causal_ob.register_to(&mut coprocessor_host);
+            self.causal_ts_providers.insert(node_id, causal_ts_provider);
         }
 
         // Start resource metering.
@@ -586,6 +583,8 @@ impl ServerCluster {
             max_unified_read_pool_thread_count,
             None,
         );
+
+        let causal_ts_provider = self.get_causal_ts_provider(node_id);
         node.start(
             engines,
             simulate_trans.clone(),
@@ -598,6 +597,7 @@ impl ServerCluster {
             auto_split_controller,
             concurrency_manager.clone(),
             collector_reg_handle,
+            causal_ts_provider,
         )?;
         assert!(node_id == 0 || node_id == node.id());
         let node_id = node.id();
